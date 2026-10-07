@@ -5,7 +5,16 @@ function metadata(x, id) { return { job_id: x?.id || id, state: effectiveState(x
 export async function GET(request) {
   if (request.method !== "GET") return json({ error: "method_not_allowed" }, 405);
   const id = new URL(request.url, "https://vercel.local").searchParams.get("id"); if (!id) return json({ error: "missing_id" }, 400);
-  try { const r = await fetch(`${UPSTREAM}/clone/${encodeURIComponent(id)}`, { headers: { accept: "application/json" } }); const b = await r.json(); if (!r.ok) return json({ error: "upstream_error", message: b?.error || `HTTP ${r.status}` }, 502); const out = metadata(b, id); return json(out, ["completed", "partial", "failed", "expired"].includes(out.state) ? 200 : 202); }
-  catch (e) { return json({ error: "upstream_error", message: e.message }, 502); }
+  try {
+    const r = await fetch(`${UPSTREAM}/clone/${encodeURIComponent(id)}`, { signal: AbortSignal.timeout(8000), headers: { accept: "application/json" } });
+    const text = await r.text(); let b; try { b = text ? JSON.parse(text) : {}; } catch { b = null; }
+    if (!r.ok || !b || typeof b !== "object") return json({ error: "upstream_error", message: b?.error || `Upstream HTTP ${r.status}` }, 502);
+    const out = metadata(b, id);
+    return json(out, ["completed", "partial", "failed", "expired"].includes(out.state) ? 200 : 202);
+  } catch (e) {
+    // Timeouts here are transient: keep the job alive so the bot polls again.
+    if (e?.name === "TimeoutError" || e?.name === "AbortError") return json({ job_id: id, state: "processing" }, 202);
+    return json({ error: "upstream_error", message: e.message }, 502);
+  }
 }
-export const config = { runtime: "nodejs", maxDuration: 10 };
+export const config = { runtime: "nodejs", maxDuration: 15 };
